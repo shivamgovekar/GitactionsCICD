@@ -1,0 +1,52 @@
+name: Data Pipeline CI/CD
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  GCP_PROJECT_ID: <your GCP project ID>
+  GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+
+jobs:
+  build_and_deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Set up Google Cloud SDK
+      uses: google-github-actions/setup-gcloud@v0.3.0
+      with:
+        project_id: ${{ env.GCP_PROJECT_ID }}
+        service_account_key: ${{ env.GCP_SA_KEY }}
+        export_default_credentials: true
+
+    - name: Copy common files to containers
+      run: |
+        cp commons/* containers/landing-to-archive/
+        cp commons/* containers/landing-to-raw/
+
+    - name: Build and push Docker images
+      run: |
+        cd containers/landing-to-archive
+        sh build-docker.sh
+        gcloud builds submit --tag gcr.io/${{ env.GCP_PROJECT_ID }}/landing-to-archive .
+
+        cd ../landing-to-raw
+        sh build-docker.sh
+        gcloud builds submit --tag gcr.io/${{ env.GCP_PROJECT_ID }}/landing-to-raw .
+
+    - name: Deploy cloud functions
+      run: |
+        cd cloudfunctions
+        gcloud functions deploy vendor_1 --entry-point vendor_1 --runtime python39 --trigger-http
+        gcloud functions deploy vendor_2 --entry-point vendor_2 --runtime python39 --trigger-http
+
+    - name: Deploy DAGs to Airflow
+      run: |
+        cd Dags
+        gcloud composer environments storage dags import --environment <your Airflow environment name> --location <your Airflow environment location> --source vendor_1.py --destination vendor_1.py
+        gcloud composer environments storage dags import --environment <your Airflow environment name> --location <your Airflow environment location> --source vendor_2.py --destination vendor_2.py
